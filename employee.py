@@ -1,9 +1,139 @@
 from tkinter import *
 from tkinter import messagebox,ttk
-import pymysql 
+# Database functionality disabled - pymysql import removed
+# import pymysql 
+
 import time
 import os 
 import tempfile
+
+# ========================================================================
+# STANDALONE GROSS-UP PAYROLL CALCULATION MODULE
+# ========================================================================
+# Excel-Ready: This function can process salary data from Excel rows
+# Usage: result = calculate_gross_up_salary({'Basic Pay': 50000, 'PF Percentage': 12, ...})
+# ========================================================================
+
+def calculate_gross_up_salary(data: dict) -> dict:
+    """
+    Calculate Gross-Up salary with Inclusion and Exclusion components.
+    
+    GROSS-UP FORMULA EXPLANATION:
+    ------------------------------
+    When net/take-home salary needs to be maintained, we use gross-up calculation:
+    
+    Gross Salary = Total Inclusions / (1 - Total Deduction Rate)
+    
+    Example:
+    - If Basic=50000, HRA=10000, OT=5000, Other=2000
+    - Total Inclusions = 67000
+    - If PF% = 12% (rate = 0.12)
+    - Gross = 67000 / (1 - 0.12) = 67000 / 0.88 = 76136.36
+    - PF Amount = Basic × 12% = 50000 × 0.12 = 6000
+    - Net Salary = Gross - PF - Other Deductions
+    
+    KEY PRINCIPLE:
+    - PF is ALWAYS calculated on Basic Pay only, NOT on Gross
+    - Gross-up ensures that inclusion components remain constant
+    - As deduction % increases, gross automatically increases to compensate
+    
+    Args:
+        data (dict): Input salary components with keys:
+            - 'Basic Pay' (float): Required - Base salary for PF calculation
+            - 'HRA' (float): Optional - House Rent Allowance
+            - 'Over Time' (float): Optional - Overtime pay
+            - 'Other Allowances' (float): Optional - Additional allowances
+            - 'PF Percentage' (float): Optional - Default 12%
+            - 'Other Deductions' (float): Optional - Additional deductions
+    
+    Returns:
+        dict: Calculated salary breakdown with keys:
+            - All input components (echoed back)
+            - 'PF Amount' (float): Calculated PF = Basic × PF%
+            - 'Total Inclusions' (float): Sum of all inclusion components
+            - 'Total Deductions' (float): PF + Other Deductions
+            - 'Gross Salary' (float): Grossed-up salary
+            - 'Net Salary' (float): Take-home = Gross - Total Deductions
+    
+    Excel Integration Example:
+    --------------------------
+    # If Excel has columns: Basic, HRA, OT, Other_Allow, PF_Percent
+    # Row data can be directly converted to dict:
+    excel_row = {'Basic Pay': row['Basic'], 'HRA': row['HRA'], ...}
+    result = calculate_gross_up_salary(excel_row)
+    """
+    
+    # Extract input values with defaults
+    basic_pay = float(data.get('Basic Pay', 0))
+    hra = float(data.get('HRA', 0))
+    over_time = float(data.get('Over Time', 0))
+    other_allowances = float(data.get('Other Allowances', 0))
+    pf_percentage = float(data.get('PF Percentage', 12))  # Default 12%
+    other_deductions = float(data.get('Other Deductions', 0))
+    
+    # Validation
+    if basic_pay <= 0:
+        raise ValueError("Basic Pay must be greater than 0")
+    if pf_percentage < 0 or pf_percentage > 100:
+        raise ValueError("PF Percentage must be between 0 and 100")
+    
+    # Calculate Total Inclusions (components that add to salary)
+    total_inclusions = basic_pay + hra + over_time + other_allowances
+    
+    # Calculate PF Amount (ALWAYS based on Basic Pay only)
+    pf_rate = pf_percentage / 100
+    pf_amount = basic_pay * pf_rate
+    
+    # GROSS-UP CALCULATION
+    # Formula: Gross = Inclusions / (1 - PF_Rate)
+    # This ensures that after PF deduction, employee gets the intended inclusions
+    if pf_rate >= 1.0:
+        raise ValueError("PF Percentage cannot be 100% or more (would result in infinite gross)")
+    
+    gross_salary = total_inclusions / (1 - pf_rate)
+    
+    # Calculate Total Deductions
+    total_deductions = pf_amount + other_deductions
+    
+    # Calculate Net/Take-Home Salary
+    net_salary = gross_salary - total_deductions
+    
+    # Return comprehensive breakdown
+    result = {
+        # Input components (for reference)
+        'Basic Pay': basic_pay,
+        'HRA': hra,
+        'Over Time': over_time,
+        'Other Allowances': other_allowances,
+        'PF Percentage': pf_percentage,
+        'Other Deductions': other_deductions,
+        
+        # Calculated values
+        'Total Inclusions': total_inclusions,
+        'PF Amount': pf_amount,
+        'Total Deductions': total_deductions,
+        'Gross Salary': gross_salary,
+        'Net Salary': net_salary
+    }
+    
+    return result
+
+# ========================================================================
+# EXAMPLE USAGE (for testing)
+# ========================================================================
+# sample_data = {
+#     'Basic Pay': 50000,
+#     'HRA': 10000,
+#     'Over Time': 5000,
+#     'Other Allowances': 2000,
+#     'PF Percentage': 12,
+#     'Other Deductions': 1000
+# }
+# result = calculate_gross_up_salary(sample_data)
+# print(f"Gross Salary: {result['Gross Salary']:.2f}")
+# print(f"Net Salary: {result['Net Salary']:.2f}")
+# ========================================================================
+
 class EmployeeSystem:
     def __init__(self, root):
         self.root = root
@@ -104,16 +234,27 @@ class EmployeeSystem:
         self.entry_add.place(x=170, y=405,width=525,height=150)
 
         #Frame2
-        #Variables
+        #Variables - Salary Components for Gross-Up Calculation
         self.var_slr_month=StringVar()
         self.var_slr_year=StringVar()
-        self.var_slr_salary=StringVar()
+        self.var_slr_basic=StringVar()  # Basic Pay (inclusion)
+        self.var_slr_hra=StringVar()  # HRA (inclusion)
+        self.var_slr_ot=StringVar()  # Over Time (inclusion)
+        self.var_slr_other_allow=StringVar()  # Other Allowances (inclusion)
+        self.var_slr_pf_percent=StringVar()  # PF percentage (exclusion, default 12%)
+        self.var_slr_pf_percent.set('12')  # Default PF percentage
+        self.var_slr_other_deduct=StringVar()  # Other deductions (exclusion)
+        self.var_slr_gross=StringVar()  # Calculated Gross Salary
+        self.var_slr_pf_amount=StringVar()  # Calculated PF Amount
+        self.var_slr_net=StringVar()  # Net/Take-Home Salary
+        
+        # Legacy variables (kept for backward compatibility)
+        self.var_slr_salary=StringVar()  # Old salary field
         self.var_slr_tdays=StringVar()
         self.var_slr_abs=StringVar()
         self.var_slr_medical=StringVar()
-        self.var_slr_pf=StringVar()
+        self.var_slr_pf=StringVar()  # Old PF amount field
         self.var_slr_conv=StringVar()
-        self.var_slr_net=StringVar()
        
         Frame2=Frame(self.root,bd=5,relief=RIDGE,bg="white")
         Frame2.place(x=770,y=70,width=600,height=325)
@@ -128,48 +269,57 @@ class EmployeeSystem:
         lbl_year.place(x=200, y=60)
         entry_year = Entry(Frame2, font=("times new roman", 15, "bold"),textvariable=self.var_slr_year, bg="light yellow", fg="black", justify="left").place(x=265, y=62,width=100)
 
-        lbl_salary = Label(Frame2, text="Salary", font=("times new roman", 15), bg="white", fg="black",anchor="w",padx=10)
-        lbl_salary.place(x=380, y=60)
-        entry_salary = Entry(Frame2, font=("times new roman", 15, "bold"),textvariable=self.var_slr_salary, bg="light yellow", fg="black", justify="left").place(x=450, y=62,width=100)
+        lbl_pf_percent = Label(Frame2, text="PF %", font=("times new roman", 15), bg="white", fg="black",anchor="w",padx=10)
+        lbl_pf_percent.place(x=380, y=60)
+        entry_pf_percent = Entry(Frame2, font=("times new roman", 15, "bold"),textvariable=self.var_slr_pf_percent, bg="light yellow", fg="black", justify="left").place(x=450, y=62,width=100)
 
-        #ROW 1
-        lbl_days = Label(Frame2, text="Total Days", font=("times new roman",15), bg="white", fg="black", anchor="w", padx=10)
-        lbl_days.place(x=10, y=100)
-        entry_days = Entry(Frame2, font=("times new roman", 15, "bold"),textvariable=self.var_slr_tdays, bg="light yellow", fg="black", justify="left").place(x=140, y=105,width=125)
+        #ROW 1 - Inclusion Components
+        lbl_basic = Label(Frame2, text="Basic Pay", font=("times new roman",15), bg="white", fg="black", anchor="w", padx=10)
+        lbl_basic.place(x=10, y=100)
+        entry_basic = Entry(Frame2, font=("times new roman", 15, "bold"),textvariable=self.var_slr_basic, bg="light yellow", fg="black", justify="left").place(x=140, y=105,width=125)
 
-        lbl_absents = Label(Frame2, text="Absents", font=("times new roman",15), bg="white", fg="black", anchor="w", padx=10)
-        lbl_absents.place(x=310, y=100)
-        entry_absents= Entry(Frame2, font=("times new roman", 15, "bold"),textvariable=self.var_slr_abs, bg="light yellow", fg="black", justify="left").place(x=425, y=105,width=125)
+        lbl_hra = Label(Frame2, text="HRA", font=("times new roman",15), bg="white", fg="black", anchor="w", padx=10)
+        lbl_hra.place(x=310, y=100)
+        entry_hra= Entry(Frame2, font=("times new roman", 15, "bold"),textvariable=self.var_slr_hra, bg="light yellow", fg="black", justify="left").place(x=425, y=105,width=125)
 
-        #ROW 2
-        lbl_medical = Label(Frame2, text="Medical", font=("times new roman",15), bg="white", fg="black", anchor="w", padx=10)
-        lbl_medical.place(x=10, y=155)
-        entry_medical = Entry(Frame2, font=("times new roman", 15, "bold"),textvariable=self.var_slr_medical, bg="light yellow", fg="black", justify="left").place(x=140, y=155,width=125)
+        #ROW 2 - More Inclusions
+        lbl_ot = Label(Frame2, text="Over Time", font=("times new roman",15), bg="white", fg="black", anchor="w", padx=10)
+        lbl_ot.place(x=10, y=155)
+        entry_ot = Entry(Frame2, font=("times new roman", 15, "bold"),textvariable=self.var_slr_ot, bg="light yellow", fg="black", justify="left").place(x=140, y=155,width=125)
 
-        lbl_pf = Label(Frame2, text="PF", font=("times new roman",15), bg="white", fg="black", anchor="w", padx=10)
-        lbl_pf.place(x=310, y=155)
-        entry_pf= Entry(Frame2, font=("times new roman", 15, "bold"),textvariable=self.var_slr_pf, bg="light yellow", fg="black", justify="left").place(x=425, y=155,width=125)
+        lbl_other_allow = Label(Frame2, text="Other Allow", font=("times new roman",15), bg="white", fg="black", anchor="w", padx=10)
+        lbl_other_allow.place(x=310, y=155)
+        entry_other_allow= Entry(Frame2, font=("times new roman", 15, "bold"),textvariable=self.var_slr_other_allow, bg="light yellow", fg="black", justify="left").place(x=425, y=155,width=125)
 
-        #ROW 3
-        lbl_conv = Label(Frame2, text="Convenience", font=("times new roman",15), bg="white", fg="black", anchor="w", padx=10)
-        lbl_conv.place(x=10, y=205)
-        entry_conv = Entry(Frame2, font=("times new roman", 15, "bold"),textvariable=self.var_slr_conv, bg="light yellow", fg="black", justify="left").place(x=140, y=205,width=125)
+        #ROW 3 - Outputs and Deductions
+        lbl_other_deduct = Label(Frame2, text="Other Deduct", font=("times new roman",15), bg="white", fg="black", anchor="w", padx=10)
+        lbl_other_deduct.place(x=10, y=205)
+        entry_other_deduct = Entry(Frame2, font=("times new roman", 15, "bold"),textvariable=self.var_slr_other_deduct, bg="light yellow", fg="black", justify="left").place(x=140, y=205,width=125)
 
+        lbl_gross = Label(Frame2, text="Gross Salary", font=("times new roman",15), bg="white", fg="black", anchor="w", padx=10)
+        lbl_gross.place(x=310, y=205)
+        entry_gross= Entry(Frame2, state="readonly", font=("times new roman", 15, "bold"),textvariable=self.var_slr_gross, bg="lightyellow", fg="black", justify="left").place(x=425, y=205,width=125)
+        
+        #ROW 4 - PF Amount and Net Salary
+        lbl_pf_amount = Label(Frame2, text="PF Amount", font=("times new roman",15), bg="white", fg="black", anchor="w", padx=10)
+        lbl_pf_amount.place(x=10, y=235)
+        entry_pf_amount = Entry(Frame2, state="readonly", font=("times new roman", 15, "bold"),textvariable=self.var_slr_pf_amount, bg="lightyellow", fg="black", justify="left").place(x=140, y=235,width=125)
+        
         lbl_net = Label(Frame2, text="Net Salary", font=("times new roman",15), bg="white", fg="black", anchor="w", padx=10)
-        lbl_net.place(x=310, y=205)
-        entry_net= Entry(Frame2, state="readonly", font=("times new roman", 15, "bold"),textvariable=self.var_slr_net, bg="light yellow", fg="black", justify="left").place(x=425, y=205,width=125)
+        lbl_net.place(x=310, y=235)
+        entry_net= Entry(Frame2, state="readonly", font=("times new roman", 15, "bold"),textvariable=self.var_slr_net, bg="lightyellow", fg="black", justify="left").place(x=425, y=235,width=125)
 
-        #ROW 4 Buttons
-        btn_calc = Button(Frame2, text="Calculate",command=self.calculate, font=("times new roman",15), bg="yellow", fg="black", padx=10)
-        btn_calc.place(x=10, y=255,height=27,width=100)
+        #ROW 5 Buttons
+        btn_calc = Button(Frame2, text="Calculate",command=self.calculate_gross_up, font=("times new roman",15), bg="yellow", fg="black", padx=10)
+        btn_calc.place(x=10, y=280,height=27,width=100)
         self.btn_save = Button(Frame2, text="Save",command=self.save, font=("times new roman",15), bg="green", fg="white", padx=10)
-        self.btn_save.place(x=120, y=255,height=27,width=100)
+        self.btn_save.place(x=120, y=280,height=27,width=100)
         btn_clear = Button(Frame2, text="Clear",command=self.clear, font=("times new roman",15), bg="orange", fg="black", padx=10)
-        btn_clear.place(x=230, y=255,height=27,width=100)
+        btn_clear.place(x=230, y=280,height=27,width=100)
         self.btn_update = Button(Frame2, text="Update",state=DISABLED,command=self.update, font=("times new roman",15), bg="cyan", fg="black", padx=10)
-        self.btn_update.place(x=340, y=255,height=27,width=100)
+        self.btn_update.place(x=340, y=280,height=27,width=100)
         self.btn_delete = Button(Frame2, text="Delete",state=DISABLED,command=self.delete, font=("times new roman",15), bg="red", fg="black", padx=10)
-        self.btn_delete.place(x=450, y=255,height=27,width=100)
+        self.btn_delete.place(x=450, y=280,height=27,width=100)
         
         #Frame3
         Frame3=Frame(self.root,bd=5,relief=RIDGE,bg="white")
@@ -263,53 +413,8 @@ class EmployeeSystem:
         self.check_connection()
     #============ all functions start hear============
     def search(self):
-        if self.var_emp_code.get()=='':
-            messagebox.showerror("Error","Employee Details Are Required")
-        else:
-            try:
-                conn=pymysql.connect(host='localhost',user='root',password='',db='ems')
-                cur=conn.cursor()
-                cur.execute("select * from emp_salary where code=%s",(self.var_emp_code.get()))
-                row=cur.fetchone()
-                if row==None:
-                    messagebox.showerror('error','Invalid Employee Id, Please Try With Another Employee ID',parent=self.root)
-                else:
-                    self.var_emp_code.set(row[0])
-                    self.var_emp_designation.set(row[1])
-                    self.var_emp_name.set(row[2])
-                    self.var_emp_age.set(row[3])
-                    self.var_emp_gender.set(row[4])
-                    self.var_emp_email.set(row[5])
-                    self.var_emp_hl.set(row[6])
-                    self.var_emp_dob.set(row[7])
-                    self.var_emp_doj.set(row[8])
-                    self.var_emp_exp.set(row[9])
-                    self.var_emp_pid.set(row[10])
-                    self.var_emp_contact.set(row[11])
-                    self.var_emp_status.set(row[12])
-                    self.entry_add.delete('1.0',END)
-                    self.entry_add.insert(END,row[13])
-                    self.var_slr_month.set(row[14])
-                    self.var_slr_year.set(row[15])
-                    self.var_slr_salary.set(row[16])
-                    self.var_slr_tdays.set(row[17])
-                    self.var_slr_abs.set(row[18])
-                    self.var_slr_medical.set(row[19])
-                    self.var_slr_pf.set(row[20])
-                    self.var_slr_conv.set(row[21])
-                    self.var_slr_net.set(row[22])
-                    file=open('Salary_Receipt/'+str(row[23]),'r')
-                    self.txt_salary_recipt.delete('1.0',END)
-                    for i in file:
-                        self.txt_salary_recipt.insert(END,i)
-                    file.close()
-                    self.btn_save.config(state=DISABLED)
-                    self.btn_update.config(state=NORMAL)
-                    self.btn_delete.config(state=NORMAL)
-                    self.btn_print.config(state=NORMAL)
-                    self.entry_code.config(state="readonly")
-            except Exception as exp:
-                messagebox.showerror("error",f'error due to : {str(exp)}')
+        # Database functionality disabled
+        messagebox.showinfo("Database Disabled", "Search function is disabled (Database removed - Option A mode)\nDatabase functionality has been removed from this version.", parent=self.root)
     
     def clear(self):
         self.btn_save.config(state=NORMAL)
@@ -332,15 +437,26 @@ class EmployeeSystem:
         self.var_emp_status.set('')
         self.entry_add.delete('1.0',END)
   
+        # Clear gross-up salary fields
         self.var_slr_month.set('')
         self.var_slr_year.set('')
+        self.var_slr_basic.set('')
+        self.var_slr_hra.set('')
+        self.var_slr_ot.set('')
+        self.var_slr_other_allow.set('')
+        self.var_slr_pf_percent.set('12')  # Reset to default
+        self.var_slr_other_deduct.set('')
+        self.var_slr_gross.set('')
+        self.var_slr_pf_amount.set('')
+        self.var_slr_net.set('')
+        
+        # Clear legacy fields (if needed)
         self.var_slr_salary.set('')
         self.var_slr_tdays.set('')
         self.var_slr_abs.set('')
         self.var_slr_medical.set('')
         self.var_slr_pf.set('')
         self.var_slr_conv.set('')
-        self.var_slr_net.set('')
         self.txt_salary_recipt.delete('1.0',END)
         self.txt_salary_recipt.insert(END,self.sample)
 
@@ -417,178 +533,89 @@ class EmployeeSystem:
         self.window.mainloop()
 
     def update(self):
-        if self.var_emp_code.get()=='':
-            messagebox.showerror("Error","Employee Details Are Required")
-        else:
-            try:
-                conn=pymysql.connect(host='localhost',user='root',password='',db='ems')
-                cur=conn.cursor()
-                cur.execute("select * from emp_salary where code=%s",(self.var_emp_code.get()))
-                row=cur.fetchone()
-                if row==None:
-                    messagebox.showerror('error','this employee id Is Invalid , Try Again With Valid Employee ID',parent=self.root)
-                else:
-                    cur.execute("UPDATE `emp_salary` SET `designation`=%s,`name`=%s,`age`=%s,`gender`=%s,`email`=%s,`hl`=%s,`dob`=%s,`doj`=%s,`exp`=%s,`pid`=%s,`contact`=%s,`status`=%s,`add`=%s,`month`=%s,`year`=%s,`salary`=%s,`tdays`=%s,`abs`=%s,`medical`=%s,`pf`=%s,`conv`=%s,`net`=%s,`reciept`=%s WHERE code=%s",
-                    (
-                        self.var_emp_designation.get(),
-                        self.var_emp_name.get(),
-                        self.var_emp_age.get(),
-                        self.var_emp_gender.get(),
-                        self.var_emp_email.get(),
-                        self.var_emp_hl.get(),
-                        self.var_emp_dob.get(),
-                        self.var_emp_doj.get(),
-                        self.var_emp_exp.get(),
-                        self.var_emp_pid.get(),
-                        self.var_emp_contact.get(),
-                        self.var_emp_status.get(),
-                        self.entry_add.get('1.0',END),
-                        self.var_slr_month.get(),
-                        self.var_slr_year.get(),
-                        self.var_slr_salary.get(),
-                        self.var_slr_tdays.get(),
-                        self.var_slr_abs.get(),
-                        self.var_slr_medical.get(),
-                        self.var_slr_pf.get(),
-                        self.var_slr_conv.get(),
-                        self.var_slr_net.get(),
-                        self.var_emp_code.get()+".txt",
-                        self.var_emp_code.get()
-                    ))
-                    conn.commit()
-                    conn.close()
-                    file=open('Salary_Receipt/'+str(self.var_emp_code.get())+".txt",'w')
-                    file.write(self.txt_salary_recipt.get('1.0',END))
-                    file.close()
-                    messagebox.showinfo("Success","Record Updated Successfully")
-            except Exception as exp:
-                messagebox.showerror("error",f'error due to : {str(exp)}')
+        # Database functionality disabled
+        messagebox.showinfo("Database Disabled", "Update function is disabled (Database removed - Option A mode)\nDatabase functionality has been removed from this version.", parent=self.root)
     
     def delete(self):
-        if self.var_emp_code.get()=='':
-            messagebox.showerror("Error","Employee Details Are Required")
-        else:
-            try:
-                conn=pymysql.connect(host='localhost',user='root',password='',db='ems')
-                cur=conn.cursor()
-                cur.execute("select * from emp_salary where code=%s",(self.var_emp_code.get()))
-                row=cur.fetchone()
-                if row==None:
-                    messagebox.showerror('error','Invalid Employee Id, Please Try With Another Employee ID',parent=self.root)
-                else:
-                    op=messagebox.askyesno('Confirm','Do You Really Want To Delete?')
-                    if op==True:
-                        cur.execute('delete from emp_salary where code=%s',(self.var_emp_code.get()))
-                        conn.commit()
-                        conn.close()
-                        messagebox.showinfo("Sucess","Record Deleted Sucessfully",parent=self.root)
-                        self.clear()
-            except Exception as exp:
-                messagebox.showerror("error",f'error due to : {str(exp)}')
+        # Database functionality disabled
+        messagebox.showinfo("Database Disabled", "Delete function is disabled (Database removed - Option A mode)\nDatabase functionality has been removed from this version.", parent=self.root)
 
     def save(self):
-        if self.var_emp_code.get()=='':
-            messagebox.showerror("Error","Employee Details Are Required")
-        else:
-            try:
-                conn=pymysql.connect(host='localhost',user='root',password='',db='ems')
-                cur=conn.cursor()
-                cur.execute("select * from emp_salary where code=%s",(self.var_emp_code.get()))
-                row=cur.fetchone()
-                if row!=None:
-                    messagebox.showerror('error','this employee id has already avalable in our record try again with another ID',parent=self.root)
-                else:
-                    cur.execute("insert into emp_salary values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                    (
-                        self.var_emp_code.get(),
-                        self.var_emp_designation.get(),
-                        self.var_emp_name.get(),
-                        self.var_emp_age.get(),
-                        self.var_emp_gender.get(),
-                        self.var_emp_email.get(),
-                        self.var_emp_hl.get(),
-                        self.var_emp_dob.get(),
-                        self.var_emp_doj.get(),
-                        self.var_emp_exp.get(),
-                        self.var_emp_pid.get(),
-                        self.var_emp_contact.get(),
-                        self.var_emp_status.get(),
-                        self.entry_add.get('1.0',END),
-                        self.var_slr_month.get(),
-                        self.var_slr_year.get(),
-                        self.var_slr_salary.get(),
-                        self.var_slr_tdays.get(),
-                        self.var_slr_abs.get(),
-                        self.var_slr_medical.get(),
-                        self.var_slr_pf.get(),
-                        self.var_slr_conv.get(),
-                        self.var_slr_net.get(),
-                        self.var_emp_code.get()+".txt"
-                    ))
-                    conn.commit()
-                    conn.close()
-                    file=open('Salary_Receipt/'+str(self.var_emp_code.get())+".txt",'w')
-                    file.write(self.txt_salary_recipt.get('1.0',END))
-                    file.close()
-                    messagebox.showinfo("Success","Record Added Successfully")
-                    self.btn_print.config(state=NORMAL)
-            except Exception as exp:
-                messagebox.showerror("error",f'error due to : {str(exp)}')
+        # Database functionality disabled
+        messagebox.showinfo("Database Disabled", "Save function is disabled (Database removed - Option A mode)\nDatabase functionality has been removed from this version.", parent=self.root)
 
-    def calculate(self):
-        if self.var_slr_salary.get()=='' or self.var_slr_month.get()=='' or self.var_slr_year.get()=='' or self.var_slr_tdays.get()=='' or self.var_slr_abs.get()=='' or self.var_slr_medical.get()=='' or self.var_slr_pf.get()=='' or self.var_slr_conv.get()=='':
-            messagebox.showerror('Error','All Fields Are Required')
-        else:
-            per_day=int(self.var_slr_salary.get())/int(self.var_slr_tdays.get())
-            work_day=int(self.var_slr_tdays.get())-int(self.var_slr_abs.get())
-            sal=per_day*work_day
-            deduct=int(self.var_slr_medical.get())+int(self.var_slr_pf.get())
-            addition=int(self.var_slr_conv.get())
-            net_salary=sal-deduct+addition
-            self.var_slr_net.set(str(round(net_salary,2)))
-            #====update the reciept====
+    def calculate_gross_up(self):
+        """
+        GUI wrapper for gross-up salary calculation.
+        Calls the standalone calculate_gross_up_salary function.
+        """
+        # Validate required fields
+        if self.var_slr_basic.get()=='' or self.var_slr_pf_percent.get()=='':
+            messagebox.showerror('Error','Basic Pay and PF% are required fields')
+            return
+        
+        try:
+            # Prepare input data dictionary for the calculation function
+            input_data = {
+                'Basic Pay': float(self.var_slr_basic.get() or 0),
+                'HRA': float(self.var_slr_hra.get() or 0),
+                'Over Time': float(self.var_slr_ot.get() or 0),
+                'Other Allowances': float(self.var_slr_other_allow.get() or 0),
+                'PF Percentage': float(self.var_slr_pf_percent.get() or 12),
+                'Other Deductions': float(self.var_slr_other_deduct.get() or 0)
+            }
+            
+            # Call the standalone gross-up calculation function
+            result = calculate_gross_up_salary(input_data)
+            
+            # Update GUI fields with calculated values
+            self.var_slr_gross.set(str(round(result['Gross Salary'], 2)))
+            self.var_slr_pf_amount.set(str(round(result['PF Amount'], 2)))
+            self.var_slr_net.set(str(round(result['Net Salary'], 2)))
+            
+            # Update the salary receipt
             new_sample=f'''\tCompany Name, XYZ\n\tAddress: XYZ, Floor4
     ---------------------------------------------
      Employee Id\t\t:    {self.var_emp_code.get()}
      Salary of\t\t:    {self.var_slr_month.get()}-{self.var_slr_year.get()}
      Generated On\t\t:    {str(time.strftime("%d-%m-%Y"))}  
     ---------------------------------------------
-     Total Days\t\t:    {self.var_slr_tdays.get()}
-     Total Present\t\t:    {str(int(self.var_slr_tdays.get())-int(self.var_slr_abs.get()))}
-     Total Absent\t\t:    {self.var_slr_abs.get()}
-     Convenience\t\t:    Rs.{self.var_slr_conv.get()}
-     Medical\t\t:    Rs.{self.var_slr_medical.get()}
-     PF\t\t:    Rs.{self.var_slr_pf.get()}
-     Gross Payment\t\t:    Rs.{self.var_slr_salary.get()}
-     Net Salary\t\t:    Rs.{self.var_slr_net.get()}
+     SALARY BREAKDOWN (Gross-Up Calculation)
+    ---------------------------------------------
+     Inclusion Components:
+     Basic Pay\t\t:    Rs.{result['Basic Pay']:.2f}
+     HRA\t\t:    Rs.{result['HRA']:.2f}
+     Over Time\t\t:    Rs.{result['Over Time']:.2f}
+     Other Allowances\t\t:    Rs.{result['Other Allowances']:.2f}
+    ---------------------------------------------
+     Gross Salary\t\t:    Rs.{result['Gross Salary']:.2f}
+    ---------------------------------------------
+     Deductions:
+     PF ({result['PF Percentage']:.1f}%)\t\t:    Rs.{result['PF Amount']:.2f}
+     Other Deductions\t\t:    Rs.{result['Other Deductions']:.2f}
+     Total Deductions\t\t:    Rs.{result['Total Deductions']:.2f}
+    ---------------------------------------------
+     Net Salary (Take-Home)\t:    Rs.{result['Net Salary']:.2f}
     ---------------------------------------------
      This Is A Computer Generated Slip,
      It Does Not Require Any Signature.
     '''
             self.txt_salary_recipt.delete('1.0',END)
             self.txt_salary_recipt.insert(END,new_sample)
+            
+        except ValueError as e:
+            messagebox.showerror('Error', f'Invalid input: Please enter valid numbers\n{str(e)}')
+        except Exception as e:
+            messagebox.showerror('Error', f'Calculation error: {str(e)}')
     
     def check_connection(self):
-        try:
-            conn=pymysql.connect(host='localhost',user='root',password='',db='ems')
-            cur=conn.cursor()
-            cur.execute("select * from emp_salary")
-            rows=cur.fetchall()
-        except Exception as exp:
-            messagebox.showerror("error",f'error due to : {str(exp)}')
+        # Database functionality disabled - no connection check needed
+        pass
 
     def show(self):
-        try:
-            conn=pymysql.connect(host='localhost',user='root',password='',db='ems')
-            cur=conn.cursor()
-            cur.execute("select * from emp_salary")
-            rows=cur.fetchall()
-            self.dataframe.delete(*self.dataframe.get_children())
-            for row in rows:
-                self.dataframe.insert('',END,values=row)
-            conn.close()
-        except Exception as exp:
-            messagebox.showerror("error",f'error due to : {str(exp)}')
+        # Database functionality disabled - clear dataframe and show message
+        self.dataframe.delete(*self.dataframe.get_children())
+        messagebox.showinfo("Database Disabled", "View All Records function is disabled (Database removed - Option A mode)\nDatabase functionality has been removed from this version.", parent=self.window)
     
     def print_reciept(self):
         temp_file=tempfile.mktemp(".txt")
